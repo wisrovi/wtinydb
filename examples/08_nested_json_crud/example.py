@@ -1,145 +1,53 @@
 """08_nested_json_crud/example.py
 
-Demonstrates N-level nested JSON object storage, retrieval, and dotted field querying in WTinyDB.
-Uses clean `Q("field.path").eq(val)` syntax.
+Master runner executing all single-responsibility CRUD scripts for Example 08 in sequence:
+- 01_create.py
+- 02_read.py
+- 03_update.py
+- 04_delete.py
+- 05_drop_db.py
 """
 
-import json
-import os
-from typing import Dict, Optional
-from pydantic import BaseModel, Field
-from wtinydb import Q, WTinyDB
+import sys
+from pathlib import Path
 
-# Global configuration flags
-DB_FILE = "nested_company_db.json"
-CLEANUP_DB_ON_EXIT = False
+# Add current example directory to sys.path
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
 
-
-# Level 4 Model: GeoLocation & Address
-class GeoCoordinates(BaseModel):
-    lat: float
-    lon: float
-
-
-class Address(BaseModel):
-    street: str
-    city: str
-    country: str
-    geo: GeoCoordinates
-
-
-# Level 3 Model: Contact & Manager
-class ContactInfo(BaseModel):
-    email: str
-    phone: str
-    address: Address
-
-
-class Manager(BaseModel):
-    name: str
-    title: str
-    contact: ContactInfo
-
-
-# Level 2 Model: Department
-class Department(BaseModel):
-    name: str
-    budget: float
-    manager: Manager
-
-
-# Level 1 Model: Company (Root Document)
-class Company(BaseModel):
-    company_name: str
-    department: Department
-
-
-def run_nested_json_example():
-    print("=== WTinyDB N-Level Nested JSON CRUD Example ===")
-
-    # Initialize WTinyDB with disk persistence
-    with WTinyDB(Company, db_path=DB_FILE) as db:
-        db.clear()
-
-        # Construct a 5-level nested document
-        nested_company = Company(
-            company_name="TechCorp Global",
-            department=Department(
-                name="Artificial Intelligence",
-                budget=5000000.00,
-                manager=Manager(
-                    name="Dr. Sarah Connor",
-                    title="VP of AI Systems",
-                    contact=ContactInfo(
-                        email="sarah.connor@techcorp.com",
-                        phone="+1-555-0199",
-                        address=Address(
-                            street="100 Innovation Way",
-                            city="San Francisco",
-                            country="USA",
-                            geo=GeoCoordinates(lat=37.7749, lon=-122.4194),
-                        ),
-                    ),
-                ),
-            ),
-        )
-
-        # 1. CREATE: Insert model instance. WTinyDB automatically populates .doc_id and .id
-        inserted_company = db.insert(nested_company)
-        
-        print(f"1. CREATE -> Inserted Company into disk DB:")
-        print(f"   - Assigned doc_id (direct property) : {inserted_company.doc_id}")
-        print(f"   - Company Name                       : '{inserted_company.company_name}'")
-        print(f"   - Dept (Level 2)                     : {inserted_company.department.name}")
-        print(f"   - Manager (Level 3)                  : {inserted_company.department.manager.name}")
-        print(f"   - City (Level 4)                     : {inserted_company.department.manager.contact.address.city}")
-        print(f"   - Geo Lat (Level 5)                  : {inserted_company.department.manager.contact.address.geo.lat}")
-
-        # 2. READ / QUERY: Search by nested dotted field path using clean Q syntax
-        print(f"\n2. READ -> Querying nested path Q('department.manager.contact.address.city').eq('San Francisco')...")
-        results = db.find(Q("department.manager.contact.address.city").eq("San Francisco"))
-        
-        found_company = results[0]
-        print(f"   - Found record with doc_id={found_company.doc_id}: '{found_company.company_name}'")
-
-        # 3. UPDATE: Pass the inserted_company instance directly to db.update()
-        print(f"\n3. UPDATE -> Modifying nested manager title using inserted_company instance directly...")
-        db.update(inserted_company, {
-            "department": {
-                "name": "Artificial Intelligence",
-                "budget": 5500000.00,
-                "manager": {
-                    "name": "Dr. Sarah Connor",
-                    "title": "Chief AI Officer (CAIO)",
-                    "contact": inserted_company.department.manager.contact.model_dump(),
-                },
-            }
-        })
-
-        # Re-fetch document using inserted_company instance directly
-        updated_company = db.get(inserted_company)
-        print(f"   - Updated Manager Title: '{updated_company.department.manager.title}'")
-
-
-def inspect_disk_file_json():
-    """Inspect raw JSON on disk to verify true nested hierarchy storage."""
-    print("\n--- Direct Disk JSON File Inspection ---")
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        print(f"Raw contents of physical file '{DB_FILE}':")
-        print(json.dumps(data, indent=2))
+import importlib
 
 
 def main():
-    run_nested_json_example()
-    inspect_disk_file_json()
+    print("=== WTinyDB Example 08: Single-Responsibility Modular CRUD ===")
 
-    if CLEANUP_DB_ON_EXIT and os.path.exists(DB_FILE):
-        os.remove(DB_FILE)
-        print(f"\nCleaned up temp file '{DB_FILE}'")
-    else:
-        print(f"\nDatabase persisted on disk at: '{os.path.abspath(DB_FILE)}'")
+    # Run Step 1: Create
+    create_module = importlib.import_module("01_create")
+    create_module.create_nested_company()
+
+    print("\n----------------------------------------\n")
+
+    # Run Step 2: Read
+    read_module = importlib.import_module("02_read")
+    read_module.read_nested_company()
+
+    print("\n----------------------------------------\n")
+
+    # Run Step 3: Update
+    update_module = importlib.import_module("03_update")
+    update_module.update_nested_company()
+
+    print("\n----------------------------------------\n")
+
+    # Run Step 4: Delete
+    delete_module = importlib.import_module("04_delete")
+    delete_module.delete_nested_company()
+
+    print("\n----------------------------------------\n")
+
+    # Run Step 5: Drop DB
+    drop_module = importlib.import_module("05_drop_db")
+    drop_module.drop_database_file()
 
 
 if __name__ == "__main__":
