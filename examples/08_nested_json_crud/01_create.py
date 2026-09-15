@@ -6,7 +6,6 @@ Inserts a 5-level nested Pydantic Company document into disk database 'nested_co
 import sys
 from pathlib import Path
 
-# Add example directory to sys.path to allow dto import when executed directly
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dto import Address, Company, ContactInfo, Department, GeoCoordinates, Manager
@@ -17,9 +16,8 @@ DB_FILE = "nested_company_db.json"
 
 def create_nested_company():
     """Create and insert a 5-level nested company document into disk database."""
-    print("=== Step 1: CREATE (Insert 5-Level Nested Company) ===")
+    print("=== Step 1: CREATE (Insert 5-Level Nested Company Document) ===")
 
-    # Construct nested Pydantic DTO
     nested_company = Company(
         company_name="TechCorp Global",
         department=Department(
