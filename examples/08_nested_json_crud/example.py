@@ -1,7 +1,7 @@
 """08_nested_json_crud/example.py
 
 Demonstrates N-level nested JSON object storage, retrieval, and dotted field querying in WTinyDB.
-WTinyDB handles document IDs internally (accessible directly via `inserted_company.doc_id` or passing model instances directly).
+Uses clean `Q("field.path").eq(val)` syntax.
 """
 
 import json
@@ -95,14 +95,14 @@ def run_nested_json_example():
         print(f"   - City (Level 4)                     : {inserted_company.department.manager.contact.address.city}")
         print(f"   - Geo Lat (Level 5)                  : {inserted_company.department.manager.contact.address.geo.lat}")
 
-        # 2. READ / QUERY: Search by nested dotted field path
-        print(f"\n2. READ -> Querying nested path 'department.manager.contact.address.city' == 'San Francisco'...")
-        results = db.find(Q("department.manager.contact.address.city").eq("department.manager.contact.address.city", "San Francisco"))
+        # 2. READ / QUERY: Search by nested dotted field path using clean Q syntax
+        print(f"\n2. READ -> Querying nested path Q('department.manager.contact.address.city').eq('San Francisco')...")
+        results = db.find(Q("department.manager.contact.address.city").eq("San Francisco"))
         
         found_company = results[0]
         print(f"   - Found record with doc_id={found_company.doc_id}: '{found_company.company_name}'")
 
-        # 3. UPDATE: Pass the inserted_company instance directly to db.update()! WTinyDB resolves ID internally.
+        # 3. UPDATE: Pass the inserted_company instance directly to db.update()
         print(f"\n3. UPDATE -> Modifying nested manager title using inserted_company instance directly...")
         db.update(inserted_company, {
             "department": {
