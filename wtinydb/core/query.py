@@ -23,47 +23,67 @@ class QueryBuilder:
         """Initialize QueryBuilder, optionally specifying target field."""
         self.field_name = field_name
 
-    def eq(self, field: str, value: Any) -> Any:
-        """Field equals value."""
-        return _resolve_query(field) == value
+    def _get_target_and_val(self, arg1: Any, arg2: Any = None) -> tuple[str, Any]:
+        """Resolve target field name and comparison value."""
+        if arg2 is None:
+            if not self.field_name:
+                raise ValueError("Target field name must be specified in Q('field') or method call.")
+            return self.field_name, arg1
+        return str(arg1), arg2
 
-    def neq(self, field: str, value: Any) -> Any:
+    def eq(self, arg1: Any, arg2: Any = None) -> Any:
+        """Field equals value. Accepts `Q('field').eq(val)` or `Q().eq('field', val)`."""
+        field, val = self._get_target_and_val(arg1, arg2)
+        return _resolve_query(field) == val
+
+    def neq(self, arg1: Any, arg2: Any = None) -> Any:
         """Field does not equal value."""
-        return _resolve_query(field) != value
+        field, val = self._get_target_and_val(arg1, arg2)
+        return _resolve_query(field) != val
 
-    def gt(self, field: str, value: Any) -> Any:
+    def gt(self, arg1: Any, arg2: Any = None) -> Any:
         """Field greater than value."""
-        return _resolve_query(field) > value
+        field, val = self._get_target_and_val(arg1, arg2)
+        return _resolve_query(field) > val
 
-    def gte(self, field: str, value: Any) -> Any:
+    def gte(self, arg1: Any, arg2: Any = None) -> Any:
         """Field greater than or equal to value."""
-        return _resolve_query(field) >= value
+        field, val = self._get_target_and_val(arg1, arg2)
+        return _resolve_query(field) >= val
 
-    def lt(self, field: str, value: Any) -> Any:
+    def lt(self, arg1: Any, arg2: Any = None) -> Any:
         """Field less than value."""
-        return _resolve_query(field) < value
+        field, val = self._get_target_and_val(arg1, arg2)
+        return _resolve_query(field) < val
 
-    def lte(self, field: str, value: Any) -> Any:
+    def lte(self, arg1: Any, arg2: Any = None) -> Any:
         """Field less than or equal to value."""
-        return _resolve_query(field) <= value
+        field, val = self._get_target_and_val(arg1, arg2)
+        return _resolve_query(field) <= val
 
-    def in_list(self, field: str, values: List[Any]) -> Any:
+    def in_list(self, arg1: Any, arg2: Any = None) -> Any:
         """Field value is in list of values."""
-        return _resolve_query(field).one_of(values)
+        field, val = self._get_target_and_val(arg1, arg2)
+        return _resolve_query(field).one_of(val)
 
-    def matches(self, field: str, regex_pattern: str, flags: int = 0) -> Any:
+    def matches(self, arg1: Any, arg2: Any = None, flags: int = 0) -> Any:
         """Field matches regular expression pattern."""
-        return _resolve_query(field).matches(regex_pattern, flags=flags)
+        field, pattern = self._get_target_and_val(arg1, arg2)
+        return _resolve_query(field).matches(pattern, flags=flags)
 
-    def exists(self, field: str) -> Any:
+    def exists(self, field: Optional[str] = None) -> Any:
         """Field exists in document."""
-        return _resolve_query(field).exists()
+        target = field or self.field_name
+        if not target:
+            raise ValueError("Target field name must be specified.")
+        return _resolve_query(target).exists()
 
-    def search_text(self, field: str, substring: str, case_sensitive: bool = False) -> Any:
+    def search_text(self, arg1: Any, arg2: Any = None, case_sensitive: bool = False) -> Any:
         """Field contains text substring."""
+        field, substring = self._get_target_and_val(arg1, arg2)
         if case_sensitive:
-            return _resolve_query(field).search(re.escape(substring))
-        return _resolve_query(field).search(re.escape(substring), flags=re.IGNORECASE)
+            return _resolve_query(field).search(re.escape(str(substring)))
+        return _resolve_query(field).search(re.escape(str(substring)), flags=re.IGNORECASE)
 
 
 def Q(field: str) -> QueryBuilder:
