@@ -1,4 +1,4 @@
-"""Asynchronous WTinyDB wrapper for non-blocking database operations."""
+"""Asynchronous WTinyDB wrapper matching WMongoAsync interface."""
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -14,12 +14,20 @@ T = TypeVar("T", bound=BaseModel)
 class AsyncWTinyDB(Generic[T]):
     """Asynchronous wrapper for WTinyDB operations using asyncio thread executor."""
 
-    def __init__(self, sync_db: WTinyDB[T], executor: Optional[ThreadPoolExecutor] = None):
+    QUEUE_NAME = "wtinydb:notifications:changes"
+
+    def __init__(
+        self,
+        sync_db: Optional[WTinyDB[T]] = None,
+        executor: Optional[ThreadPoolExecutor] = None,
+        **kwargs: Any,
+    ):
         """Initialize AsyncWTinyDB wrapping a synchronous WTinyDB instance.
 
-        :param sync_db: Target synchronous WTinyDB instance.
-        :param executor: Optional ThreadPoolExecutor for background execution.
+        If sync_db is not provided, passes kwargs to construct a default WTinyDB instance.
         """
+        if sync_db is None:
+            sync_db = WTinyDB(**kwargs)
         self.sync_db = sync_db
         self._executor = executor
 
@@ -28,9 +36,13 @@ class AsyncWTinyDB(Generic[T]):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, lambda: func(*args, **kwargs))
 
-    async def insert(self, instance: T) -> T:
-        """Async insert single model instance."""
-        return await self._run(self.sync_db.insert, instance)
+    async def insert(
+        self,
+        collection_or_instance: Union[str, T],
+        document: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Async insert single model instance or collection document."""
+        return await self._run(self.sync_db.insert, collection_or_instance, document)
 
     async def insert_many(self, instances: List[T]) -> List[T]:
         """Async insert multiple model instances."""
@@ -49,18 +61,31 @@ class AsyncWTinyDB(Generic[T]):
         return await self._run(self.sync_db.get_all, include_deleted=include_deleted)
 
     async def find(
-        self, cond: Union[Query, Callable[[Dict[str, Any]], bool]], include_deleted: bool = False
-    ) -> List[T]:
-        """Async find documents matching condition."""
-        return await self._run(self.sync_db.find, cond, include_deleted=include_deleted)
+        self,
+        collection_or_cond: Union[str, Query, Callable[[Dict[str, Any]], bool]],
+        query: Optional[Dict[str, Any]] = None,
+        include_deleted: bool = False,
+    ) -> List[Any]:
+        """Async find documents matching condition or collection query."""
+        return await self._run(self.sync_db.find, collection_or_cond, query=query, include_deleted=include_deleted)
 
-    async def update(self, doc_id: int, data: Union[Dict[str, Any], T]) -> T:
-        """Async update document by doc_id."""
-        return await self._run(self.sync_db.update, doc_id, data)
+    async def update(
+        self,
+        collection_or_id: Union[str, int],
+        query_or_data: Union[Dict[str, Any], T],
+        update_values: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Async update document by doc_id or collection query."""
+        return await self._run(self.sync_db.update, collection_or_id, query_or_data, update_values=update_values)
 
-    async def delete(self, doc_id: int, hard: bool = False) -> bool:
-        """Async delete document by doc_id."""
-        return await self._run(self.sync_db.delete, doc_id, hard=hard)
+    async def delete(
+        self,
+        collection_or_id: Union[str, int],
+        query: Optional[Dict[str, Any]] = None,
+        hard: bool = False,
+    ) -> Any:
+        """Async delete document by doc_id or collection query."""
+        return await self._run(self.sync_db.delete, collection_or_id, query=query, hard=hard)
 
     async def count(self, include_deleted: bool = False) -> int:
         """Async count total documents."""
@@ -73,3 +98,9 @@ class AsyncWTinyDB(Generic[T]):
     async def close(self) -> None:
         """Async close database storage."""
         await self._run(self.sync_db.close)
+
+    async def __aenter__(self) -> "AsyncWTinyDB":
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        await self.close()
