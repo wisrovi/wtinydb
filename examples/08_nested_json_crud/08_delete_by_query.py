@@ -3,12 +3,10 @@
 Deletes records matching query criteria.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-
-from dto import Company, Department, Manager, ContactInfo, Address, GeoCoordinates
+try:
+    from .dto import Address, Company, ContactInfo, Department, GeoCoordinates, Manager
+except ImportError:
+    from dto import Address, Company, ContactInfo, Department, GeoCoordinates, Manager
 from wtinydb import Q, WTinyDB
 
 DB_FILE = "nested_company_db.json"
