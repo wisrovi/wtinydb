@@ -1,6 +1,6 @@
-"""02_read_all.py - Single Responsibility: STANDARD READ
+"""02_read_all.py - Single Responsibility: READ ALL / READ BY ID
 
-Retrieves all company documents from disk database using standard `get_all()` and `get(doc_id)`.
+Reads all records or fetches a specific record by ID from 'nested_company_db.json'.
 """
 
 import sys
@@ -15,18 +15,23 @@ DB_FILE = "nested_company_db.json"
 
 
 def read_all_companies():
-    """Retrieve all companies using standard get_all() method."""
-    print("=== Step 2: READ ALL (Standard Document Retrieval) ===")
+    """Retrieve all nested companies and fetch by ID."""
+    print("=== Step 2: READ ALL & READ BY ID ===")
 
     with WTinyDB(Company, db_path=DB_FILE) as db:
-        if db.count() == 0:
-            print("Database is empty. Please run 01_create.py first.")
-            return
+        companies = db.get_all()
+        print(f"Total companies found in '{DB_FILE}': {len(companies)}")
 
-        all_companies = db.get_all()
-        print(f"Retrieved {len(all_companies)} company document(s) from '{DB_FILE}':")
-        for company in all_companies:
-            print(f"  - doc_id={company.doc_id} | Company: '{company.company_name}' | Dept: {company.department.name}")
+        for comp in companies:
+            print(f"\n[Record ID {comp.doc_id}]")
+            print(f"  - Company Name : '{comp.company_name}'")
+            print(f"  - Department   : {comp.department.name}")
+            print(f"  - Manager      : {comp.department.manager.name}")
+
+            # Fetch explicitly by ID
+            by_id = db.get(comp.doc_id)
+            if by_id:
+                print(f"  -> Verified fetch by ID {comp.doc_id}: Found '{by_id.company_name}'")
 
 
 if __name__ == "__main__":
