@@ -1,12 +1,17 @@
 """07_disk_persistence_crud/example.py
 
-Demonstrates explicit disk persistence using 'with' context manager for automatic database closure.
+Demonstrates disk persistence with 'with' context manager.
+Controlled via global CLEANUP_DB_ON_EXIT flag.
 """
 
 import json
 import os
 from pydantic import BaseModel, Field
 from wtinydb import WTinyDB
+
+# Global configuration flags
+DB_FILE = "my_disk_database.json"
+CLEANUP_DB_ON_EXIT = False  # Set to True if temporary file cleanup is desired
 
 
 class Product(BaseModel):
@@ -17,21 +22,17 @@ class Product(BaseModel):
     price: float = Field(description="Price in USD")
 
 
-DB_FILE = "my_disk_database.json"
-
-
 def session_one_write():
     """First session: Create database file on disk and insert products using 'with' block."""
     print("--- Session 1: Writing data to disk with context manager ---")
 
-    if os.path.exists(DB_FILE):
-        os.remove(DB_FILE)
-
-    # Using 'with' automatically manages closing resources on exit
     with WTinyDB(Product, db_path=DB_FILE) as db:
-        p1 = db.insert(Product(name="Laptop Pro 16", sku="LAP-16", price=1999.99))
-        p2 = db.insert(Product(name="Ergonomic Mouse", sku="MOU-01", price=49.99))
-        print(f"Inserted 2 products into physical file: '{DB_FILE}'")
+        if db.count() == 0:
+            p1 = db.insert(Product(name="Laptop Pro 16", sku="LAP-16", price=1999.99))
+            p2 = db.insert(Product(name="Ergonomic Mouse", sku="MOU-01", price=49.99))
+            print(f"Inserted initial products into physical file: '{DB_FILE}'")
+        else:
+            print(f"File '{DB_FILE}' already contains {db.count()} document(s). Skipping initial insert.")
 
 
 def session_two_read_and_modify():
@@ -44,8 +45,9 @@ def session_two_read_and_modify():
         for prod in existing_products:
             print(f"  - SKU: {prod.sku} | Name: {prod.name} | Price: ${prod.price}")
 
-        print("\nUpdating price of product doc_id=1 on disk...")
-        db.update(1, {"price": 1849.99})
+        if len(existing_products) > 0:
+            print("\nUpdating price of product doc_id=1 on disk...")
+            db.update(1, {"price": 1849.99})
 
 
 def inspect_disk_file_directly():
@@ -64,9 +66,11 @@ def main():
     session_two_read_and_modify()
     inspect_disk_file_directly()
 
-    if os.path.exists(DB_FILE):
+    if CLEANUP_DB_ON_EXIT and os.path.exists(DB_FILE):
         os.remove(DB_FILE)
         print(f"\nCleaned up temp file '{DB_FILE}'")
+    else:
+        print(f"\nDatabase persisted on disk at: '{os.path.abspath(DB_FILE)}'")
 
 
 if __name__ == "__main__":
