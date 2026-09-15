@@ -30,6 +30,21 @@ ENCRYPTION_KEY = Fernet.generate_key()
 cipher_suite = Fernet(ENCRYPTION_KEY)
 
 
+def _extract_id(target: Any) -> int:
+    """Extract integer document ID from integer or Pydantic model instance."""
+    if isinstance(target, int):
+        return target
+    if isinstance(target, BaseModel):
+        for attr in ("doc_id", "id", "_doc_id", "_id"):
+            val = getattr(target, attr, None)
+            if isinstance(val, int):
+                return val
+    try:
+        return int(target)
+    except (ValueError, TypeError):
+        raise ValueError(f"Could not extract document ID from target: {target}")
+
+
 class WTinyDB(Generic[T]):
     """Synchronous WTinyDB client providing WMongo-compatible collection CRUD, Redis cache, notifications, and Pydantic models."""
 
@@ -101,15 +116,22 @@ class WTinyDB(Generic[T]):
         return instance.model_dump(mode="json")
 
     def _to_model(self, doc: Dict[str, Any], doc_id: int) -> T:
-        """Deserialize TinyDB doc dict into Pydantic model instance."""
+        """Deserialize TinyDB doc dict into Pydantic model instance with doc_id and id attributes."""
         if not self.model_class:
             return doc
         try:
             doc_copy = dict(doc)
-            if "doc_id" not in doc_copy and "id" not in doc_copy:
+            if "doc_id" not in doc_copy:
                 doc_copy["doc_id"] = doc_id
+            if "id" not in doc_copy:
+                doc_copy["id"] = doc_id
+
             model = self.model_class.model_validate(doc_copy)
-            setattr(model, "_doc_id", doc_id)
+
+            # Ensure doc_id, id, and _doc_id are accessible directly on model instance
+            object.__setattr__(model, "doc_id", doc_id)
+            object.__setattr__(model, "id", doc_id)
+            object.__setattr__(model, "_doc_id", doc_id)
             return model
         except PydanticValidationError as e:
             raise ValidationError(f"Failed to validate document doc_id={doc_id}: {e}") from e
@@ -166,7 +188,6 @@ class WTinyDB(Generic[T]):
                 if not query_dict:
                     results = tbl.all()
                 else:
-                    # Match dict keys against document fields
                     results = tbl.search(
                         lambda doc: all(doc.get(k) == v for k, v in query_dict.items())
                     )
@@ -188,17 +209,17 @@ class WTinyDB(Generic[T]):
 
     def update(
         self,
-        collection_or_id: Union[str, int],
+        collection_or_id_or_model: Union[str, int, T],
         query_or_data: Union[Dict[str, Any], T],
         update_values: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        """Update documents. Accepts WMongo style `update('users', query, update_values)` or `update(doc_id, data)`."""
+        """Update documents. Accepts WMongo style `update('users', query, update_values)` or `update(model_instance_or_id, data)`."""
         if self.read_only:
             raise PermissionError("Database is in read-only mode!")
 
         with self._lock:
-            if isinstance(collection_or_id, str):
-                collection_name = collection_or_id
+            if isinstance(collection_or_id_or_model, str):
+                collection_name = collection_or_id_or_model
                 query_dict = query_or_data if isinstance(query_or_data, dict) else {}
                 vals = update_values or {}
                 tbl = self.db.table(collection_name)
@@ -221,7 +242,7 @@ class WTinyDB(Generic[T]):
                     })
                 return updated_count
             else:
-                doc_id = collection_or_id
+                doc_id = _extract_id(collection_or_id_or_model)
                 if not self.table.contains(doc_id=doc_id):
                     raise DocumentNotFoundError(doc_id=doc_id, table_name=self.table_name)
                 update_dict = self._to_doc(query_or_data) if isinstance(query_or_data, BaseModel) else query_or_data
@@ -230,17 +251,17 @@ class WTinyDB(Generic[T]):
 
     def delete(
         self,
-        collection_or_id: Union[str, int],
+        collection_or_id_or_model: Union[str, int, T],
         query: Optional[Dict[str, Any]] = None,
         hard: bool = False,
     ) -> Any:
-        """Delete documents. Accepts WMongo style `delete('users', query)` or `delete(doc_id)`."""
+        """Delete documents. Accepts WMongo style `delete('users', query)` or `delete(model_instance_or_id)`."""
         if self.read_only:
             raise PermissionError("Database is in read-only mode!")
 
         with self._lock:
-            if isinstance(collection_or_id, str):
-                collection_name = collection_or_id
+            if isinstance(collection_or_id_or_model, str):
+                collection_name = collection_or_id_or_model
                 query_dict = query or {}
                 tbl = self.db.table(collection_name)
 
@@ -260,7 +281,7 @@ class WTinyDB(Generic[T]):
                     })
                 return deleted_count
             else:
-                doc_id = collection_or_id
+                doc_id = _extract_id(collection_or_id_or_model)
                 if not self.table.contains(doc_id=doc_id):
                     raise DocumentNotFoundError(doc_id=doc_id, table_name=self.table_name)
 
@@ -281,8 +302,9 @@ class WTinyDB(Generic[T]):
             doc_ids = self.table.insert_multiple(docs)
             return [self._to_model(doc, doc_id) for doc, doc_id in zip(docs, doc_ids)]
 
-    def get(self, doc_id: int) -> T:
-        """Retrieve a document by TinyDB doc_id."""
+    def get(self, target: Union[int, T]) -> T:
+        """Retrieve a document by TinyDB doc_id or Pydantic model instance."""
+        doc_id = _extract_id(target)
         with self._lock:
             doc = self.table.get(doc_id=doc_id)
             if doc is None:
