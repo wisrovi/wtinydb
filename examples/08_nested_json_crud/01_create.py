@@ -3,12 +3,10 @@
 Inserts a 5-level nested Pydantic Company document into disk database 'nested_company_db.json'.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-
-from dto import Address, Company, ContactInfo, Department, GeoCoordinates, Manager
+try:
+    from .dto import Address, Company, ContactInfo, Department, GeoCoordinates, Manager
+except ImportError:
+    from dto import Address, Company, ContactInfo, Department, GeoCoordinates, Manager
 from wtinydb import WTinyDB
 
 DB_FILE = "nested_company_db.json"
