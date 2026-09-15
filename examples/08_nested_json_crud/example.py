@@ -1,6 +1,7 @@
 """08_nested_json_crud/example.py
 
 Demonstrates N-level nested JSON object storage, retrieval, and dotted field querying in WTinyDB.
+Includes explicit explanation of how document IDs (doc_id) are dynamically generated and used.
 """
 
 import json
@@ -60,7 +61,7 @@ def run_nested_json_example():
     with WTinyDB(Company, db_path=DB_FILE) as db:
         db.clear()
 
-        # Construct a 4-level nested document
+        # Construct a 5-level nested document
         nested_company = Company(
             company_name="TechCorp Global",
             department=Department(
@@ -83,23 +84,38 @@ def run_nested_json_example():
             ),
         )
 
-        # 1. CREATE (Insert 4-level nested model)
+        # ----------------------------------------------------------------------
+        # 1. CREATE: Insert model and extract the dynamically assigned doc_id
+        # ----------------------------------------------------------------------
         inserted_company = db.insert(nested_company)
-        doc_id = getattr(inserted_company, "_doc_id", 1)  # Retrieve assigned auto-increment document ID
-        print(f"Inserted Company with assigned doc_id={doc_id}: '{inserted_company.company_name}'")
-        print(f"  Level 2 (Dept): {inserted_company.department.name}")
-        print(f"  Level 3 (Manager): {inserted_company.department.manager.name}")
-        print(f"  Level 4 (City): {inserted_company.department.manager.contact.address.city}")
-        print(f"  Level 5 (Geo Lat): {inserted_company.department.manager.contact.address.geo.lat}")
+        
+        # EXPLICIT DOC_ID RETRIEVAL:
+        # WTinyDB injects '_doc_id' into the returned Pydantic instance upon insertion
+        dynamic_doc_id = getattr(inserted_company, "_doc_id")
+        
+        print(f"1. CREATE -> Inserted Company into disk DB:")
+        print(f"   - Dynamically Assigned doc_id : {dynamic_doc_id}")
+        print(f"   - Company Name                 : '{inserted_company.company_name}'")
+        print(f"   - Dept (Level 2)               : {inserted_company.department.name}")
+        print(f"   - Manager (Level 3)            : {inserted_company.department.manager.name}")
+        print(f"   - City (Level 4)               : {inserted_company.department.manager.contact.address.city}")
+        print(f"   - Geo Lat (Level 5)            : {inserted_company.department.manager.contact.address.geo.lat}")
 
-        # 2. QUERY BY NESTED DOTTED PATH
-        print("\nQuerying by nested dotted path 'department.manager.contact.address.city'...")
+        # ----------------------------------------------------------------------
+        # 2. READ / QUERY: Search by nested dotted field path
+        # ----------------------------------------------------------------------
+        print(f"\n2. READ -> Querying nested path 'department.manager.contact.address.city' == 'San Francisco'...")
         results = db.find(Q("department.manager.contact.address.city").eq("department.manager.contact.address.city", "San Francisco"))
-        print(f"Found {len(results)} matching company record(s): {results[0].company_name}")
+        
+        found_record = results[0]
+        query_doc_id = getattr(found_record, "_doc_id")
+        print(f"   - Found record with doc_id={query_doc_id}: '{found_record.company_name}'")
 
-        # 3. UPDATE NESTED OBJECT DATA BY DOC_ID
-        print(f"\nUpdating nested manager title using doc_id={doc_id}...")
-        db.update(doc_id, {
+        # ----------------------------------------------------------------------
+        # 3. UPDATE: Modify nested object data using the dynamically extracted doc_id
+        # ----------------------------------------------------------------------
+        print(f"\n3. UPDATE -> Modifying nested manager title for doc_id={dynamic_doc_id}...")
+        db.update(dynamic_doc_id, {
             "department": {
                 "name": "Artificial Intelligence",
                 "budget": 5500000.00,
@@ -111,8 +127,9 @@ def run_nested_json_example():
             }
         })
 
-        updated = db.get(doc_id)
-        print(f"Updated Manager Title: {updated.department.manager.title}")
+        # Re-fetch document by doc_id to verify update
+        updated_company = db.get(dynamic_doc_id)
+        print(f"   - Updated Manager Title: '{updated_company.department.manager.title}'")
 
 
 def inspect_disk_file_json():
