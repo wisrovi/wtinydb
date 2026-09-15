@@ -1,8 +1,11 @@
-"""Synchronous WTinyDB Database implementation with Pydantic integration."""
+"""Synchronous WTinyDB client matching WMongo interface with Pydantic support, caching, and notifications."""
 
+import json
 import os
 import threading
+import time
 from typing import Any, Callable, Dict, Generic, List, Optional, Type, TypeVar, Union
+from cryptography.fernet import Fernet
 from pydantic import BaseModel, ValidationError as PydanticValidationError
 from tinydb import Query, TinyDB, where
 from tinydb.storages import JSONStorage, MemoryStorage
@@ -10,79 +13,276 @@ from tinydb.storages import JSONStorage, MemoryStorage
 from wtinydb.exceptions import DocumentNotFoundError, StorageError, ValidationError
 from wtinydb.models import SoftDeleteMixin
 
+try:
+    import redis
+except ImportError:
+    redis = None
+
+try:
+    from wredis.queue import RedisQueueManager
+except ImportError:
+    RedisQueueManager = None
+
 T = TypeVar("T", bound=BaseModel)
+
+# 🔐 Encryption Key
+ENCRYPTION_KEY = Fernet.generate_key()
+cipher_suite = Fernet(ENCRYPTION_KEY)
 
 
 class WTinyDB(Generic[T]):
-    """Main synchronous database wrapper linking TinyDB and Pydantic models."""
+    """Synchronous WTinyDB client providing WMongo-compatible collection CRUD, Redis cache, notifications, and Pydantic models."""
+
+    QUEUE_NAME = "wtinydb:notifications:changes"
 
     def __init__(
         self,
-        model_class: Type[T],
-        db_path: Optional[str] = None,
+        model_class: Optional[Type[T]] = None,
+        db_path: str = "wtinydb.json",
         table_name: Optional[str] = None,
-        storage: Type = JSONStorage,
+        verbose: bool = False,
+        read_only: bool = False,
+        enable_notifications: bool = False,
+        enable_notification_receiver: bool = False,
+        notification_callback: Optional[Callable[[str], None]] = None,
+        redis_host: Optional[str] = None,
+        redis_port: Optional[int] = None,
+        redis_db: Optional[int] = None,
         in_memory: bool = False,
+        storage: Type = JSONStorage,
         **storage_kwargs: Any,
     ):
-        """Initialize WTinyDB instance for a given Pydantic model.
-
-        :param model_class: The Pydantic BaseModel class for schema validation and mapping.
-        :param db_path: Path to JSON database file. Defaults to memory if in_memory is True.
-        :param table_name: Table name inside TinyDB. Defaults to model_class.__name__.lower().
-        :param storage: TinyDB storage engine class (JSONStorage, MemoryStorage, etc.).
-        :param in_memory: If True, uses MemoryStorage ignoring db_path.
-        """
+        """Initialize WTinyDB instance with disk persistence by default."""
         self.model_class = model_class
-        self.table_name = table_name or model_class.__name__.lower()
+        self.table_name = table_name or (model_class.__name__.lower() if model_class else "default")
+        self.verbose = verbose
+        self.read_only = read_only
+        self.enable_notifications = enable_notifications
+        self.enable_notification_receiver = enable_notification_receiver
+        self.notification_callback = notification_callback
         self._lock = threading.RLock()
 
         if in_memory:
             self.db = TinyDB(storage=MemoryStorage)
         else:
-            if not db_path:
-                db_path = f"{self.table_name}.json"
             db_dir = os.path.dirname(db_path)
             if db_dir:
                 os.makedirs(db_dir, exist_ok=True)
             self.db = TinyDB(db_path, storage=storage, **storage_kwargs)
 
         self.table = self.db.table(self.table_name)
-        self.is_soft_delete_model = issubclass(model_class, SoftDeleteMixin)
+        self.is_soft_delete_model = issubclass(model_class, SoftDeleteMixin) if model_class else False
+
+        # Configure Redis Cache
+        self.use_cache = False
+        self.redis_client = None
+        if redis and redis_host and redis_port is not None and redis_db is not None:
+            try:
+                self.redis_client = redis.Redis(
+                    host=redis_host, port=redis_port, db=redis_db, decode_responses=True
+                )
+                self.redis_client.ping()
+                self.use_cache = True
+            except Exception:
+                self.use_cache = False
+
+        # Configure Redis Queue Manager
+        self.redis_queue_manager = None
+        if (self.enable_notifications or self.enable_notification_receiver) and RedisQueueManager and redis_host:
+            try:
+                self.redis_queue_manager = RedisQueueManager(
+                    host=redis_host, port=redis_port, db=redis_db, verbose=self.verbose
+                )
+            except Exception:
+                self.redis_queue_manager = None
 
     def _to_doc(self, instance: T) -> Dict[str, Any]:
-        """Serialize Pydantic model instance to dict with json-safe types."""
+        """Serialize Pydantic model instance to dict."""
         return instance.model_dump(mode="json")
 
     def _to_model(self, doc: Dict[str, Any], doc_id: int) -> T:
-        """Deserialize TinyDB doc dict into Pydantic model instance with doc_id injected."""
+        """Deserialize TinyDB doc dict into Pydantic model instance."""
+        if not self.model_class:
+            return doc
         try:
             doc_copy = dict(doc)
             if "doc_id" not in doc_copy and "id" not in doc_copy:
                 doc_copy["doc_id"] = doc_id
             model = self.model_class.model_validate(doc_copy)
-            # Attach internal doc_id attribute dynamically if not part of model schema
             setattr(model, "_doc_id", doc_id)
             return model
         except PydanticValidationError as e:
             raise ValidationError(f"Failed to validate document doc_id={doc_id}: {e}") from e
 
-    def insert(self, instance: T) -> T:
-        """Insert a single Pydantic model document into the database."""
+    def insert(
+        self,
+        collection_or_instance: Union[str, T],
+        document: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Insert document or Pydantic model. Accepts WMongo style `insert('users', doc)` or `insert(model_instance)`."""
+        if self.read_only:
+            raise PermissionError("Database is in read-only mode!")
+
         with self._lock:
-            doc_data = self._to_doc(instance)
-            doc_id = self.table.insert(doc_data)
-            return self._to_model(doc_data, doc_id)
+            if isinstance(collection_or_instance, str):
+                collection_name = collection_or_instance
+                doc_data = document or {}
+                tbl = self.db.table(collection_name)
+                doc_id = tbl.insert(doc_data)
+
+                if self.use_cache and self.redis_client:
+                    doc_data["_id"] = str(doc_id)
+                    self.redis_client.set(f"cache:{collection_name}:{doc_id}", json.dumps(doc_data), ex=300)
+
+                if self.enable_notifications:
+                    self._send_notification({
+                        "database": self.table_name,
+                        "collection": collection_name,
+                        "action": "insert",
+                        "document": doc_data,
+                        "timestamp": time.time(),
+                        "id": str(doc_id),
+                    })
+                return doc_id
+            else:
+                instance = collection_or_instance
+                doc_data = self._to_doc(instance)
+                doc_id = self.table.insert(doc_data)
+                return self._to_model(doc_data, doc_id)
+
+    def find(
+        self,
+        collection_or_cond: Union[str, Query, Callable[[Dict[str, Any]], bool]],
+        query: Optional[Dict[str, Any]] = None,
+        include_deleted: bool = False,
+    ) -> List[Any]:
+        """Find documents. Accepts WMongo style `find('users', {'name': 'Alice'})` or Query objects."""
+        with self._lock:
+            if isinstance(collection_or_cond, str):
+                collection_name = collection_or_cond
+                query_dict = query or {}
+                tbl = self.db.table(collection_name)
+
+                if not query_dict:
+                    results = tbl.all()
+                else:
+                    # Match dict keys against document fields
+                    results = tbl.search(
+                        lambda doc: all(doc.get(k) == v for k, v in query_dict.items())
+                    )
+
+                for doc in results:
+                    if "_id" not in doc and hasattr(doc, "doc_id"):
+                        doc["_id"] = str(doc.doc_id)
+                return results
+            else:
+                cond = collection_or_cond
+                results = self.table.search(cond)
+                models = []
+                for doc in results:
+                    model = self._to_model(doc, doc.doc_id)
+                    if not include_deleted and self.is_soft_delete_model and getattr(model, "is_deleted", False):
+                        continue
+                    models.append(model)
+                return models
+
+    def update(
+        self,
+        collection_or_id: Union[str, int],
+        query_or_data: Union[Dict[str, Any], T],
+        update_values: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Update documents. Accepts WMongo style `update('users', query, update_values)` or `update(doc_id, data)`."""
+        if self.read_only:
+            raise PermissionError("Database is in read-only mode!")
+
+        with self._lock:
+            if isinstance(collection_or_id, str):
+                collection_name = collection_or_id
+                query_dict = query_or_data if isinstance(query_or_data, dict) else {}
+                vals = update_values or {}
+                tbl = self.db.table(collection_name)
+
+                updated_ids = tbl.update(
+                    vals,
+                    cond=lambda doc: all(doc.get(k) == v for k, v in query_dict.items()) if query_dict else True,
+                )
+                updated_count = len(updated_ids)
+
+                if self.enable_notifications and updated_count > 0:
+                    self._send_notification({
+                        "database": self.table_name,
+                        "collection": collection_name,
+                        "action": "update",
+                        "query": query_dict,
+                        "update_values": vals,
+                        "timestamp": time.time(),
+                        "modified_count": updated_count,
+                    })
+                return updated_count
+            else:
+                doc_id = collection_or_id
+                if not self.table.contains(doc_id=doc_id):
+                    raise DocumentNotFoundError(doc_id=doc_id, table_name=self.table_name)
+                update_dict = self._to_doc(query_or_data) if isinstance(query_or_data, BaseModel) else query_or_data
+                self.table.update(update_dict, doc_ids=[doc_id])
+                return self.get(doc_id)
+
+    def delete(
+        self,
+        collection_or_id: Union[str, int],
+        query: Optional[Dict[str, Any]] = None,
+        hard: bool = False,
+    ) -> Any:
+        """Delete documents. Accepts WMongo style `delete('users', query)` or `delete(doc_id)`."""
+        if self.read_only:
+            raise PermissionError("Database is in read-only mode!")
+
+        with self._lock:
+            if isinstance(collection_or_id, str):
+                collection_name = collection_or_id
+                query_dict = query or {}
+                tbl = self.db.table(collection_name)
+
+                deleted_ids = tbl.remove(
+                    cond=lambda doc: all(doc.get(k) == v for k, v in query_dict.items()) if query_dict else True
+                )
+                deleted_count = len(deleted_ids)
+
+                if self.enable_notifications and deleted_count > 0:
+                    self._send_notification({
+                        "database": self.table_name,
+                        "collection": collection_name,
+                        "action": "delete",
+                        "query": query_dict,
+                        "timestamp": time.time(),
+                        "deleted_count": deleted_count,
+                    })
+                return deleted_count
+            else:
+                doc_id = collection_or_id
+                if not self.table.contains(doc_id=doc_id):
+                    raise DocumentNotFoundError(doc_id=doc_id, table_name=self.table_name)
+
+                if self.is_soft_delete_model and not hard:
+                    from datetime import datetime, timezone
+                    self.table.update({"is_deleted": True, "deleted_at": datetime.now(timezone.utc).isoformat()}, doc_ids=[doc_id])
+                    return True
+                else:
+                    self.table.remove(doc_ids=[doc_id])
+                    return True
 
     def insert_many(self, instances: List[T]) -> List[T]:
-        """Insert multiple Pydantic model documents in a single operation."""
+        """Insert multiple Pydantic model instances."""
+        if self.read_only:
+            raise PermissionError("Database is in read-only mode!")
         with self._lock:
             docs = [self._to_doc(inst) for inst in instances]
             doc_ids = self.table.insert_multiple(docs)
             return [self._to_model(doc, doc_id) for doc, doc_id in zip(docs, doc_ids)]
 
     def get(self, doc_id: int) -> T:
-        """Retrieve a single document by its TinyDB doc_id."""
+        """Retrieve a document by TinyDB doc_id."""
         with self._lock:
             doc = self.table.get(doc_id=doc_id)
             if doc is None:
@@ -93,13 +293,13 @@ class WTinyDB(Generic[T]):
             return model
 
     def get_by_field(self, field_name: str, value: Any) -> Optional[T]:
-        """Retrieve the first document matching field_name == value."""
+        """Retrieve first document matching field_name == value."""
         with self._lock:
             results = self.find(where(field_name) == value)
             return results[0] if results else None
 
     def get_all(self, include_deleted: bool = False) -> List[T]:
-        """Retrieve all documents in the table."""
+        """Retrieve all documents in the primary table."""
         with self._lock:
             models = []
             for doc in self.table.all():
@@ -109,56 +309,61 @@ class WTinyDB(Generic[T]):
                 models.append(model)
             return models
 
-    def find(self, cond: Union[Query, Callable[[Dict[str, Any]], bool]], include_deleted: bool = False) -> List[T]:
-        """Search documents matching TinyDB Query condition or custom filter callable."""
-        with self._lock:
-            results = self.table.search(cond)
-            models = []
-            for doc in results:
-                model = self._to_model(doc, doc.doc_id)
-                if not include_deleted and self.is_soft_delete_model and getattr(model, "is_deleted", False):
-                    continue
-                models.append(model)
-            return models
-
-    def update(self, doc_id: int, data: Union[Dict[str, Any], T]) -> T:
-        """Update an existing document by doc_id with dictionary or new model instance."""
-        with self._lock:
-            if not self.table.contains(doc_id=doc_id):
-                raise DocumentNotFoundError(doc_id=doc_id, table_name=self.table_name)
-
-            update_dict = self._to_doc(data) if isinstance(data, BaseModel) else data
-            self.table.update(update_dict, doc_ids=[doc_id])
-            return self.get(doc_id)
-
-    def delete(self, doc_id: int, hard: bool = False) -> bool:
-        """Delete a document by doc_id. Performs soft delete if model supports it and hard is False."""
-        with self._lock:
-            if not self.table.contains(doc_id=doc_id):
-                raise DocumentNotFoundError(doc_id=doc_id, table_name=self.table_name)
-
-            if self.is_soft_delete_model and not hard:
-                from datetime import datetime, timezone
-
-                self.table.update({"is_deleted": True, "deleted_at": datetime.now(timezone.utc).isoformat()}, doc_ids=[doc_id])
-                return True
-            else:
-                self.table.remove(doc_ids=[doc_id])
-                return True
-
     def count(self, include_deleted: bool = False) -> int:
-        """Return total document count in table."""
+        """Return total document count."""
         with self._lock:
             if not self.is_soft_delete_model or include_deleted:
                 return len(self.table)
             return len(self.get_all(include_deleted=False))
 
     def clear(self) -> None:
-        """Purge all documents from the table."""
+        """Purge all documents from primary table."""
+        if self.read_only:
+            raise PermissionError("Database is in read-only mode!")
         with self._lock:
             self.table.truncate()
 
+    def _send_notification(self, message: Dict[str, Any]) -> None:
+        """Send notification via Redis Queue Manager."""
+        if self.redis_queue_manager:
+            try:
+                self.redis_queue_manager.publish(self.QUEUE_NAME, message)
+            except Exception:
+                pass
+
+    def listen_notifications(self) -> None:
+        """Start listening for change notifications using Redis Queue Manager."""
+        if self.redis_queue_manager and self.notification_callback:
+            @self.redis_queue_manager.on_message(self.QUEUE_NAME)
+            def handle_message(record: str) -> None:
+                self.notification_callback(record)
+
+            self.redis_queue_manager.start()
+            self.redis_queue_manager.wait()
+
+    def has_permission(self, user_id: str, collection: str) -> bool:
+        """Check user permission for target collection."""
+        roles_tbl = self.db.table("roles")
+        roles = roles_tbl.search(where("user_id") == user_id)
+        if not roles:
+            return False
+        return collection in roles[0].get("collections", [])
+
+    def encrypt(self, data: str) -> str:
+        """Encrypt sensitive string data."""
+        return cipher_suite.encrypt(data.encode()).decode()
+
+    def decrypt(self, data: str) -> str:
+        """Decrypt encrypted string data."""
+        return cipher_suite.decrypt(data.encode()).decode()
+
     def close(self) -> None:
-        """Close TinyDB instance and liberate storage resources."""
+        """Close TinyDB instance and liberate resources."""
         with self._lock:
             self.db.close()
+
+    def __enter__(self) -> "WTinyDB":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
