@@ -4,12 +4,10 @@ Updates specific nested fields of a record by passing the model instance directl
 WTinyDB internally resolves doc_id from the Pydantic instance.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-
-from dto import Company
+try:
+    from .dto import Company
+except ImportError:
+    from dto import Company
 from wtinydb import WTinyDB
 
 DB_FILE = "nested_company_db.json"
