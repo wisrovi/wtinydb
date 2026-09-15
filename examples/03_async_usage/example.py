@@ -1,6 +1,6 @@
 """03_async_usage/example.py
 
-Demonstrates AsyncWTinyDB asynchronous document operations.
+Demonstrates AsyncWTinyDB asynchronous document operations using 'async with' context manager.
 """
 
 import asyncio
@@ -16,26 +16,23 @@ class LogEntry(BaseModel):
 
 
 async def main():
-    print("=== WTinyDB Async Operations Example ===")
+    print("=== WTinyDB Async Operations (async with Context Manager) Example ===")
 
     sync_db = WTinyDB(LogEntry, in_memory=True)
-    async_db = AsyncWTinyDB(sync_db)
+    async with AsyncWTinyDB(sync_db) as async_db:
+        # 1. Async insert
+        await async_db.insert(LogEntry(level="INFO", message="System started"))
+        await async_db.insert(LogEntry(level="WARNING", message="High memory usage"))
+        await async_db.insert(LogEntry(level="ERROR", message="Connection failed"))
 
-    # 1. Async insert
-    await async_db.insert(LogEntry(level="INFO", message="System started"))
-    await async_db.insert(LogEntry(level="WARNING", message="High memory usage"))
-    await async_db.insert(LogEntry(level="ERROR", message="Connection failed"))
+        # 2. Async count
+        total_logs = await async_db.count()
+        print(f"Total log entries created async: {total_logs}")
 
-    # 2. Async count
-    total_logs = await async_db.count()
-    print(f"Total log entries created async: {total_logs}")
-
-    # 3. Async get all
-    all_logs = await async_db.get_all()
-    for log in all_logs:
-        print(f"  [{log.level}] {log.message}")
-
-    await async_db.close()
+        # 3. Async get all
+        all_logs = await async_db.get_all()
+        for log in all_logs:
+            print(f"  [{log.level}] {log.message}")
 
 
 if __name__ == "__main__":
