@@ -1,7 +1,7 @@
 """Unit tests for WTinyDB synchronous operations.
 
 This test file validates CRUD operations, soft-deletion handling,
-batch inserts, document lookups, exceptions, and memory storage functionality.
+batch inserts, document lookups, exceptions, and WMongo-compatible collection operations.
 """
 
 from typing import Optional
@@ -11,7 +11,6 @@ import pytest
 from wtinydb import WTinyDB, DocumentNotFoundError, SoftDeleteMixin
 
 
-# Sample Pydantic model for unit testing
 class User(BaseModel):
     """Pydantic model representing a User document."""
 
@@ -28,37 +27,48 @@ class SoftUser(SoftDeleteMixin, BaseModel):
 
 
 def test_insert_and_get():
-    """Validates that a Pydantic model document can be inserted into WTinyDB
-
-    and retrieved using its assigned document ID, asserting schema preservation.
-    """
-    # Initialize in-memory database instance for testing
+    """Validates model insertion and retrieval by doc_id."""
     db = WTinyDB(User, in_memory=True)
-
-    # Instantiate user model and insert into database
     user_data = User(name="Alice", email="alice@example.com", age=30)
     inserted_user = db.insert(user_data)
 
-    # Validate returned user model attributes
     assert inserted_user.name == "Alice"
     assert inserted_user.email == "alice@example.com"
     assert getattr(inserted_user, "_doc_id") == 1
 
-    # Retrieve inserted user by document ID
     retrieved_user = db.get(1)
     assert retrieved_user.name == "Alice"
     assert retrieved_user.age == 30
+    db.close()
+
+
+def test_wmongo_collection_crud():
+    """Validates WMongo-compatible collection CRUD operations (insert, find, update, delete)."""
+    db = WTinyDB(in_memory=True)
+
+    # Collection insert
+    doc_id = db.insert("customers", {"name": "John Doe", "status": "active"})
+    assert doc_id == 1
+
+    # Collection find
+    found = db.find("customers", {"status": "active"})
+    assert len(found) == 1
+    assert found[0]["name"] == "John Doe"
+
+    # Collection update
+    updated_count = db.update("customers", {"name": "John Doe"}, {"status": "inactive"})
+    assert updated_count == 1
+
+    # Collection delete
+    deleted_count = db.delete("customers", {"status": "inactive"})
+    assert deleted_count == 1
 
     db.close()
 
 
 def test_insert_many_and_get_all():
-    """Validates batch insertion of multiple documents in a single transaction
-
-    and verifies retrieve all documents functionality.
-    """
+    """Validates batch insertion of multiple documents."""
     db = WTinyDB(User, in_memory=True)
-
     users = [
         User(name="Bob", email="bob@example.com", age=25),
         User(name="Charlie", email="charlie@example.com", age=35),
@@ -72,7 +82,6 @@ def test_insert_many_and_get_all():
     assert len(all_users) == 2
     assert all_users[0].name == "Bob"
     assert all_users[1].name == "Charlie"
-
     db.close()
 
 
@@ -87,7 +96,6 @@ def test_get_by_field():
 
     missing_user = db.get_by_field("email", "nonexistent@example.com")
     assert missing_user is None
-
     db.close()
 
 
@@ -96,40 +104,29 @@ def test_update_document():
     db = WTinyDB(User, in_memory=True)
     inserted = db.insert(User(name="Eve", email="eve@example.com", age=22))
 
-    # Update age field
     updated = db.update(1, {"age": 23})
     assert updated.age == 23
 
-    # Re-retrieve to verify persistence
     retrieved = db.get(1)
     assert retrieved.age == 23
-
     db.close()
 
 
 def test_soft_delete():
-    """Validates soft-delete functionality using SoftDeleteMixin.
-
-    Asserts that soft-deleted items are omitted from get_all() unless explicitly requested.
-    """
+    """Validates soft-delete functionality using SoftDeleteMixin."""
     db = WTinyDB(SoftUser, in_memory=True)
     user = db.insert(SoftUser(name="Frank", role="admin"))
 
-    # Assert soft delete sets flag
     db.delete(1, hard=False)
 
-    # Getting soft-deleted item directly should raise DocumentNotFoundError
     with pytest.raises(DocumentNotFoundError):
         db.get(1)
 
-    # get_all() should exclude soft deleted documents by default
     assert len(db.get_all(include_deleted=False)) == 0
 
-    # get_all(include_deleted=True) should return the document
     all_docs = db.get_all(include_deleted=True)
     assert len(all_docs) == 1
     assert all_docs[0].is_deleted is True
-
     db.close()
 
 
