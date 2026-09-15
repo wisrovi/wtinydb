@@ -4,12 +4,10 @@ Queries deeply nested records using Q expression (dotted notation).
 Demonstrates querying at N-level depth (e.g. level 4: city).
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-
-from dto import Company
+try:
+    from .dto import Company
+except ImportError:
+    from dto import Company
 from wtinydb import Q, WTinyDB
 
 DB_FILE = "nested_company_db.json"
