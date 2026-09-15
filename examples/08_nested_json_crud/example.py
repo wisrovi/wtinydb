@@ -85,7 +85,8 @@ def run_nested_json_example():
 
         # 1. CREATE (Insert 4-level nested model)
         inserted_company = db.insert(nested_company)
-        print(f"Inserted Company: '{inserted_company.company_name}'")
+        doc_id = getattr(inserted_company, "_doc_id", 1)  # Retrieve assigned auto-increment document ID
+        print(f"Inserted Company with assigned doc_id={doc_id}: '{inserted_company.company_name}'")
         print(f"  Level 2 (Dept): {inserted_company.department.name}")
         print(f"  Level 3 (Manager): {inserted_company.department.manager.name}")
         print(f"  Level 4 (City): {inserted_company.department.manager.contact.address.city}")
@@ -96,9 +97,9 @@ def run_nested_json_example():
         results = db.find(Q("department.manager.contact.address.city").eq("department.manager.contact.address.city", "San Francisco"))
         print(f"Found {len(results)} matching company record(s): {results[0].company_name}")
 
-        # 3. UPDATE NESTED OBJECT DATA
-        print("\nUpdating nested manager title...")
-        db.update(1, {
+        # 3. UPDATE NESTED OBJECT DATA BY DOC_ID
+        print(f"\nUpdating nested manager title using doc_id={doc_id}...")
+        db.update(doc_id, {
             "department": {
                 "name": "Artificial Intelligence",
                 "budget": 5500000.00,
@@ -110,7 +111,7 @@ def run_nested_json_example():
             }
         })
 
-        updated = db.get(1)
+        updated = db.get(doc_id)
         print(f"Updated Manager Title: {updated.department.manager.title}")
 
 
