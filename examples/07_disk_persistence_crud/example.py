@@ -1,6 +1,6 @@
 """07_disk_persistence_crud/example.py
 
-Demonstrates explicit disk persistence and data retrieval across database re-openings.
+Demonstrates explicit disk persistence using 'with' context manager for automatic database closure.
 """
 
 import json
@@ -21,44 +21,35 @@ DB_FILE = "my_disk_database.json"
 
 
 def session_one_write():
-    """First session: Create database file on disk and insert products."""
-    print("--- Session 1: Writing data to disk ---")
+    """First session: Create database file on disk and insert products using 'with' block."""
+    print("--- Session 1: Writing data to disk with context manager ---")
 
-    # Clean up old database file if it exists
     if os.path.exists(DB_FILE):
         os.remove(DB_FILE)
 
-    # Initialize WTinyDB pointing to disk file
-    db = WTinyDB(Product, db_path=DB_FILE)
-
-    p1 = db.insert(Product(name="Laptop Pro 16", sku="LAP-16", price=1999.99))
-    p2 = db.insert(Product(name="Ergonomic Mouse", sku="MOU-01", price=49.99))
-
-    print(f"Inserted 2 products into physical file: '{DB_FILE}'")
-    db.close()
+    # Using 'with' automatically manages closing resources on exit
+    with WTinyDB(Product, db_path=DB_FILE) as db:
+        p1 = db.insert(Product(name="Laptop Pro 16", sku="LAP-16", price=1999.99))
+        p2 = db.insert(Product(name="Ergonomic Mouse", sku="MOU-01", price=49.99))
+        print(f"Inserted 2 products into physical file: '{DB_FILE}'")
 
 
 def session_two_read_and_modify():
-    """Second session: Re-open physical file from disk, read existing data, and update."""
+    """Second session: Re-open physical file from disk using 'with' block."""
     print("\n--- Session 2: Re-opening database file from disk ---")
 
-    # Re-open existing database file
-    db = WTinyDB(Product, db_path=DB_FILE)
+    with WTinyDB(Product, db_path=DB_FILE) as db:
+        existing_products = db.get_all()
+        print(f"Loaded {len(existing_products)} products from disk:")
+        for prod in existing_products:
+            print(f"  - SKU: {prod.sku} | Name: {prod.name} | Price: ${prod.price}")
 
-    existing_products = db.get_all()
-    print(f"Loaded {len(existing_products)} products from disk:")
-    for prod in existing_products:
-        print(f"  - SKU: {prod.sku} | Name: {prod.name} | Price: ${prod.price}")
-
-    # Update product price
-    print("\nUpdating price of product doc_id=1 on disk...")
-    db.update(1, {"price": 1849.99})
-
-    db.close()
+        print("\nUpdating price of product doc_id=1 on disk...")
+        db.update(1, {"price": 1849.99})
 
 
 def inspect_disk_file_directly():
-    """Third step: Directly inspect the physical JSON file contents on disk using standard Python open()."""
+    """Third step: Directly inspect physical JSON file contents on disk."""
     print("\n--- Direct Disk File Inspection ---")
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r", encoding="utf-8") as f:
@@ -68,12 +59,11 @@ def inspect_disk_file_directly():
 
 
 def main():
-    print("=== WTinyDB Disk Persistence CRUD Example ===")
+    print("=== WTinyDB Disk Persistence (Context Manager 'with') Example ===")
     session_one_write()
     session_two_read_and_modify()
     inspect_disk_file_directly()
 
-    # Clean up physical file after example run
     if os.path.exists(DB_FILE):
         os.remove(DB_FILE)
         print(f"\nCleaned up temp file '{DB_FILE}'")
