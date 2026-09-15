@@ -1,0 +1,1 @@
+"""WTinyDB unit test suite."""
