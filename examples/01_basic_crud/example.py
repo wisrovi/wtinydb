@@ -1,6 +1,6 @@
 """01_basic_crud/example.py
 
-Demonstrates basic CRUD operations with WTinyDB and Pydantic models.
+Demonstrates basic CRUD operations with WTinyDB and Pydantic models with disk persistence by default.
 """
 
 from pydantic import BaseModel, Field
@@ -18,8 +18,11 @@ class User(BaseModel):
 def main():
     print("=== WTinyDB Basic CRUD Example ===")
 
-    # Initialize in-memory database
-    db = WTinyDB(User, in_memory=True)
+    # Initialize database with disk persistence by default ('users_db.json')
+    db = WTinyDB(User, db_path="users_db.json")
+
+    # Clear previous run data
+    db.clear()
 
     # 1. CREATE (Insert single and batch)
     user1 = db.insert(User(name="Alice Smith", email="alice@example.com", age=30))
