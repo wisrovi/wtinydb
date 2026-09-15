@@ -180,7 +180,19 @@ class WTinyDB(Generic[T]):
     ) -> List[Any]:
         """Find documents. Accepts WMongo style `find('users', {'name': 'Alice'})` or Query objects."""
         with self._lock:
-            if isinstance(collection_or_cond, str):
+            if isinstance(collection_or_cond, dict):
+                query_dict = collection_or_cond
+                results = self.table.search(
+                    lambda doc: all(doc.get(k) == v for k, v in query_dict.items())
+                )
+                models = []
+                for doc in results:
+                    model = self._to_model(doc, doc.doc_id)
+                    if not include_deleted and self.is_soft_delete_model and getattr(model, "is_deleted", False):
+                        continue
+                    models.append(model)
+                return models
+            elif isinstance(collection_or_cond, str):
                 collection_name = collection_or_cond
                 query_dict = query or {}
                 tbl = self.db.table(collection_name)
@@ -218,7 +230,11 @@ class WTinyDB(Generic[T]):
             raise PermissionError("Database is in read-only mode!")
 
         with self._lock:
-            if isinstance(collection_or_id_or_model, str):
+            if isinstance(collection_or_id_or_model, (Query, Callable)):
+                cond = collection_or_id_or_model
+                update_dict = query_or_data if isinstance(query_or_data, dict) else self._to_doc(query_or_data)
+                return self.table.update(update_dict, cond)
+            elif isinstance(collection_or_id_or_model, str):
                 collection_name = collection_or_id_or_model
                 query_dict = query_or_data if isinstance(query_or_data, dict) else {}
                 vals = update_values or {}
@@ -251,16 +267,19 @@ class WTinyDB(Generic[T]):
 
     def delete(
         self,
-        collection_or_id_or_model: Union[str, int, T],
+        collection_or_id_or_model: Union[str, int, Query, T],
         query: Optional[Dict[str, Any]] = None,
         hard: bool = False,
     ) -> Any:
-        """Delete documents. Accepts WMongo style `delete('users', query)` or `delete(model_instance_or_id)`."""
+        """Delete documents. Accepts WMongo style `delete('users', query)` or `delete(model_instance_or_id)` or `delete(Query)`."""
         if self.read_only:
             raise PermissionError("Database is in read-only mode!")
 
         with self._lock:
-            if isinstance(collection_or_id_or_model, str):
+            if isinstance(collection_or_id_or_model, (Query, Callable)):
+                cond = collection_or_id_or_model
+                return self.table.remove(cond)
+            elif isinstance(collection_or_id_or_model, str):
                 collection_name = collection_or_id_or_model
                 query_dict = query or {}
                 tbl = self.db.table(collection_name)
