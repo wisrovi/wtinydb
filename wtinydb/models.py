@@ -42,3 +42,15 @@ class AuditMixin(TimestampMixin, SoftDeleteMixin):
     """Combined mixin providing timestamps and soft-delete audit features."""
 
     pass
+
+
+class ForensicModel(BaseModel):
+    """Base Pydantic model with forensic audit fields for WTinyDB."""
+
+    create_by: Optional[int] = 1
+    create_in: Optional[datetime] = None
+    update_by: Optional[int] = None
+    update_in: Optional[datetime] = None
+    delete_by: Optional[int] = None
+    delete_in: Optional[datetime] = None
+    status: int = 1
