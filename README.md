@@ -21,6 +21,8 @@
 
 ## Features
 
+- **Enterprise Forensic Automation**: Ghost table (`_forensic_audit_log`) audit trail for all document mutations (`INSERT`, `UPDATE`, `DELETE`).
+- **Multi-Table Manager & Registry**: Multi-model registration with dictionary indexing `app[User]` and dynamic attribute dispatch `app.user`.
 - **Pydantic Model Mapping**: Automatic serialization, deserialization, and schema validation.
 - **Fluent Query Builder (`Q`)**: Intuitive query building with comparison operators, regex matching, and text search.
 - **Async Support (`AsyncWTinyDB`)**: Non-blocking thread-pool execution for FastAPI and Starlette apps.
