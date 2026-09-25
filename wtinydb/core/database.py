@@ -4,7 +4,7 @@ import json
 import os
 import threading
 import time
-from typing import Any, Callable, Dict, Generic, List, Optional, Type, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, Type, TypeVar, Union
 from cryptography.fernet import Fernet
 from pydantic import BaseModel, ValidationError as PydanticValidationError
 from tinydb import Query, TinyDB, where
@@ -45,6 +45,9 @@ def _extract_id(target: Any) -> int:
         raise ValueError(f"Could not extract document ID from target: {target}")
 
 
+from wtinydb.models import ForensicModel, SoftDeleteMixin
+
+
 class WTinyDB(Generic[T]):
     """Synchronous WTinyDB client providing WMongo-compatible collection CRUD, Redis cache, notifications, and Pydantic models."""
 
@@ -52,6 +55,7 @@ class WTinyDB(Generic[T]):
 
     def __init__(
         self,
+        target: Optional[Union[Type[BaseModel], List[Type[BaseModel]], Tuple[Type[BaseModel], ...], str, dict]] = None,
         model_class: Optional[Type[T]] = None,
         db_path: str = "wtinydb.json",
         table_name: Optional[str] = None,
@@ -65,28 +69,73 @@ class WTinyDB(Generic[T]):
         redis_db: Optional[int] = None,
         in_memory: bool = False,
         storage: Type = JSONStorage,
+        forensic: Optional[bool] = None,
+        models: Optional[Union[List[Type[BaseModel]], Tuple[Type[BaseModel], ...]]] = None,
+        db: Optional[TinyDB] = None,
         **storage_kwargs: Any,
     ):
         """Initialize WTinyDB instance with disk persistence by default."""
-        self.model_class = model_class
-        self.table_name = table_name or (model_class.__name__.lower() if model_class else "default")
+        resolved_db_path = db_path
+        resolved_models: Optional[list[type[BaseModel]]] = list(models) if models is not None else None
+        resolved_model: Optional[type[BaseModel]] = model_class
+
+        if isinstance(target, str):
+            resolved_db_path = target
+        elif isinstance(target, dict):
+            resolved_db_path = target.get("db_path") or target.get("database") or db_path
+        elif isinstance(target, (list, tuple)):
+            resolved_models = list(target)
+        elif isinstance(target, type) and issubclass(target, BaseModel):
+            resolved_model = target
+
+        self.model_class = resolved_model
+        self.db_path = resolved_db_path
+        self.table_name = table_name or (resolved_model.__name__.lower() if resolved_model else "default")
         self.verbose = verbose
         self.read_only = read_only
         self.enable_notifications = enable_notifications
         self.enable_notification_receiver = enable_notification_receiver
         self.notification_callback = notification_callback
+        self.forensic_setting = forensic
         self._lock = threading.RLock()
 
-        if in_memory:
+        self._repositories: dict[Union[type[BaseModel], str], "WTinyDB"] = {}
+        self._repositories_by_name: dict[str, "WTinyDB"] = {}
+
+        if db is not None:
+            self.db = db
+        elif in_memory:
             self.db = TinyDB(storage=MemoryStorage)
         else:
-            db_dir = os.path.dirname(db_path)
+            db_dir = os.path.dirname(resolved_db_path)
             if db_dir:
                 os.makedirs(db_dir, exist_ok=True)
-            self.db = TinyDB(db_path, storage=storage, **storage_kwargs)
+            self.db = TinyDB(resolved_db_path, storage=storage, **storage_kwargs)
 
-        self.table = self.db.table(self.table_name)
-        self.is_soft_delete_model = issubclass(model_class, SoftDeleteMixin) if model_class else False
+        if resolved_models is not None:
+            self.is_multi_table = True
+            self.table = None
+            self.forensic = False
+            for m in resolved_models:
+                self.register_model(m)
+        elif resolved_model is not None:
+            self.is_multi_table = False
+            self.table = self.db.table(self.table_name)
+            if forensic is None:
+                self.forensic = (
+                    issubclass(resolved_model, ForensicModel)
+                    if isinstance(resolved_model, type) and issubclass(resolved_model, BaseModel)
+                    else False
+                )
+            else:
+                self.forensic = forensic
+            self._register_repository_references(resolved_model, self)
+        else:
+            self.is_multi_table = True
+            self.table = self.db.table(self.table_name)
+            self.forensic = bool(forensic)
+
+        self.is_soft_delete_model = issubclass(resolved_model, SoftDeleteMixin) if resolved_model else False
 
         # Configure Redis Cache
         self.use_cache = False
@@ -110,6 +159,60 @@ class WTinyDB(Generic[T]):
                 )
             except Exception:
                 self.redis_queue_manager = None
+
+    def register_model(
+        self, model: type[BaseModel], forensic: Optional[bool] = None
+    ) -> "WTinyDB":
+        use_forensic = forensic if forensic is not None else self.forensic_setting
+        repo = WTinyDB(
+            model_class=model,
+            db_path=self.db_path,
+            db=self.db,
+            forensic=use_forensic,
+        )
+        self._register_repository_references(model, repo)
+        return repo
+
+    def _register_repository_references(
+        self, model: type[BaseModel], repo: "WTinyDB"
+    ) -> None:
+        table_name = getattr(model, "__tablename__", model.__name__.lower())
+        model_name = model.__name__.lower()
+
+        self._repositories[model] = repo
+        self._repositories[model_name] = repo
+        self._repositories[table_name] = repo
+        self._repositories_by_name[model_name] = repo
+        self._repositories_by_name[table_name] = repo
+
+    def __getitem__(self, item: Union[type[BaseModel], str]) -> "WTinyDB":
+        if isinstance(item, type) and issubclass(item, BaseModel):
+            if item in self._repositories:
+                return self._repositories[item]
+        elif isinstance(item, str):
+            item_lower = item.lower()
+            if item_lower in self._repositories:
+                return self._repositories[item_lower]
+
+        if not self.is_multi_table and self.model_class:
+            if item == self.model_class or (
+                isinstance(item, str)
+                and item.lower() in (self.table_name, self.model_class.__name__.lower())
+            ):
+                return self
+
+        raise KeyError(f"Model or table '{item}' is not registered in WTinyDB registry.")
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        repositories = getattr(self, "_repositories_by_name", {})
+        name_lower = name.lower()
+        if name_lower in repositories:
+            return repositories[name_lower]
+
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def _to_doc(self, instance: T) -> Dict[str, Any]:
         """Serialize Pydantic model instance to dict."""
